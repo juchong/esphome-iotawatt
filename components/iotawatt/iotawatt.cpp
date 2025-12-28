@@ -103,10 +103,9 @@ void IoTaWattComponent::add_input_vt(uint8_t channel, std::string name, float ca
   input.voltage_sensor = voltage_sensor;
   input.frequency_sensor = frequency_sensor;
   
-  // Precalculate SPI values
+  // Precalculate SPI values (19-bit transaction, starts with bit 7 of Byte 0)
   input.cs_mask = (1 << this->cs_pin_0_->get_pin()); // VT is always on ADC0
-  input.data_word = (0x06 | ((input.channel % 8 >> 2) & 0x01)) | 
-                    (((input.channel % 8 & 0x03) << 6) << 8);
+  input.data_word = 0xC0 | ((input.channel % 8) << 3);
 
   inputs_.push_back(input);
 }
@@ -128,11 +127,10 @@ void IoTaWattComponent::add_input_ct(uint8_t channel, std::string name, float ca
   input.current_sensor = current_sensor;
   input.pf_sensor = pf_sensor;
 
-  // Precalculate SPI values
+  // Precalculate SPI values (19-bit transaction, starts with bit 7 of Byte 0)
   input.cs_mask = (1 << ((input.channel < 8) ? this->cs_pin_0_->get_pin() : this->cs_pin_1_->get_pin()));
   uint8_t chan = input.channel >= 8 ? input.channel - 7 : input.channel;
-  input.data_word = (0x06 | ((chan >> 2) & 0x01)) | 
-                    (((chan & 0x03) << 6) << 8);
+  input.data_word = 0xC0 | (chan << 3);
 
   inputs_.push_back(input);
 }
@@ -186,24 +184,23 @@ static uint16_t read_adc(spi_device_handle_t spi, int cs_pin, uint8_t channel) {
   static bool initialized = false;
   
   if (!initialized) {
-      t.length = 24; // 3 bytes
+      t.length = 19; // Shortest transaction for 12-bit readout (Start + SGL + 3 Chan + S/H + Null + 12 Data)
       t.flags = SPI_TRANS_USE_TXDATA | SPI_TRANS_USE_RXDATA;
-      t.tx_data[2] = 0x00;
       initialized = true;
   }
   
-  t.tx_data[0] = 0x06 | ((channel >> 2) & 0x01);
-  t.tx_data[1] = (channel & 0x03) << 6;
+  t.tx_data[0] = 0xC0 | (channel << 3);
+  t.tx_data[1] = 0;
+  t.tx_data[2] = 0;
 
   GPIO.out_w1tc = (1 << cs_pin);
-  
   esp_err_t ret = spi_device_polling_transmit(spi, &t);
-  
   GPIO.out_w1ts = (1 << cs_pin);
   
   if (ret != ESP_OK) return 0;
 
-  return ((t.rx_data[1] & 0x0F) << 8) | t.rx_data[2];
+  // RX layout for 19-bit: B11 in rx_data[0] bit 0, B10-B3 in rx_data[1], B2-B0 in rx_data[2] bits 7-5
+  return ((t.rx_data[0] & 0x01) << 11) | (t.rx_data[1] << 3) | (t.rx_data[2] >> 5);
 }
 
 // Read Aref from ADC1 Ch0
@@ -267,7 +264,8 @@ static inline uint16_t read_adc_fast(uint32_t cs_mask, uint32_t data_word) {
     while (GPSPI2.cmd.usr);
     GPIO.out_w1ts = cs_mask;
     uint32_t val = GPSPI2.data_buf[0];
-    return (((val >> 8) & 0x0F) << 8) | ((val >> 16) & 0xFF);
+    // Layout for 19-bit transaction: B11 in bit 0, B10-B3 in bits 8-15, B2-B0 in bits 23-21
+    return ((val & 0x01) << 11) | (((val >> 8) & 0xFF) << 3) | ((val >> 21) & 0x07);
 }
 
 static SampleCycleResult sample_cycle(const InputConfig &vt_config,
