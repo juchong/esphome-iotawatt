@@ -10,10 +10,28 @@ This project provides a custom ESPHome component for the [IoTaWatt](https://iota
 - Remove SD Card or force SD Card CS pin to high
 - Connect VCC and GND to ESP32-S3
 
-Modified PCB with ESP32-S3-Tiny board by Waveshare:
-![IoTaWatt modified with ESP32-S3-Tiny by Waveshare](images/hwmod.jpg)
-
 When using an ESP32-S3 module with its own LDO, it is recommended to use USB 5V to power the module, as it provides cleaner power for the ADC.
+
+### Pin Wiring (ESP8266 → ESP32-S3)
+
+Once the original ESP8266 is removed, rewire the following signals from the old
+NodeMCU pin to the corresponding ESP32-S3 GPIO:
+
+| ESP8266 (NodeMCU) Pin | ESP32-S3 Pin | Function |
+| --------------------- | ------------ | -------- |
+| D1                    | GPIO6        | I²C SCL (M41T81 RTC) |
+| D2                    | GPIO5        | I²C SDA (M41T81 RTC) |
+| D8                    | GPIO4        | SD card CS (hold HIGH / deselected) |
+| D3                    | GPIO9        | ADC 0 chip select |
+| D4                    | GPIO10       | ADC 1 chip select |
+| SD1                   | GPIO11       | SPI MOSI |
+| CLK                   | GPIO12       | SPI CLK |
+| SDO                   | GPIO13       | SPI MISO |
+| TX                    | TX           | UART console TX |
+| RX                    | RX           | UART console RX |
+
+Hand-wired ESP32-S3 swap following the mapping above:
+![IoTaWatt hand-wired to an ESP32-S3](images/iotawatt-hand-wired.webp)
 
 ## Overview
 
