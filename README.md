@@ -35,9 +35,9 @@ Hand-wired ESP32-S3 swap following the mapping above:
 
 ## Overview
 
-The IoTaWatt hardware normally uses an ESP8266. This project allows upgrading the hardware to an ESP32-S3 and integrating it directly into the ESPHome ecosystem for better performance and seamless Home Assistant integration with MQTT.
+The IoTaWatt hardware normally uses an ESP8266. This project allows upgrading the hardware to an ESP32-S3 and integrating it directly into the ESPHome ecosystem for better performance and seamless Home Assistant integration over the native ESPHome API.
 
-This component focus on **high-frequency power sampling**. It does not include native support for the SD Card or RTC, as these features can be added using standard ESPHome `sdcard` and `time` components if required.
+This component focuses on **high-frequency power sampling**. It does not use the IoTaWatt's SD card or its onboard M41T81 RTC: the SD card's chip-select is simply held HIGH to keep it off the shared SPI bus, and while the RTC can be detected on I²C (see [`sample.yaml`](sample.yaml)), ESPHome currently has no stock M41T81 `time` platform, so it is not read.
 
 ## Configuration
 
@@ -47,7 +47,7 @@ To use this component, add it to your ESPHome configuration using `external_comp
 external_components:
   - source:
       type: git
-      url: https://github.com/pawel-sw/esphome-iotawatt
+      url: https://github.com/juchong/esphome-iotawatt
 ```
 
 The component is configured as a sensor platform. You must define the SPI pins and the inputs (channels) in your YAML file. When migrating from the original ESP8266 version, the configuration is very similar to the `config.txt` file of the IoTaWatt SD card.
@@ -56,6 +56,8 @@ See `PHASE_TABLES` in [sensor.py](components/iotawatt/sensor.py) for a list of s
 
 > [!IMPORTANT]
 > **Technical Note on Sampling Rate**: The `read_adc_fast` function in `iotawatt.cpp` is highly optimized using direct hardware register access specifically for the **ESP32-S3**. This allows for extremely high sampling rates (~32kHz). If using other ESP32 family chips (like the original ESP32, S2, or C3), this function may need to be adjusted.
+
+For a complete, ready-to-adapt configuration — including the SPI/ADC setup, the RTC I²C scan, the SD-card CS hold, and the onboard RGB + external status LED indicators — see [`sample.yaml`](sample.yaml). The minimal example below shows just the core energy-monitoring setup.
 
 ### Example Configuration
 
