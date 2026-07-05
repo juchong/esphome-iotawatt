@@ -1,61 +1,223 @@
+# Sample ESPHome configuration for an IoTaWatt with the stock ESP8266 swapped
+# for an ESP32-S3, driven by this component. This mirrors a real working build
+# (a subpanel monitor) and documents the full peripheral wiring.
+#
+# SECRETS: replace the api encryption key, OTA password, and AP password below,
+# and define wifi_ssid / wifi_password in your secrets.yaml. Never commit real
+# keys/passwords.
+#
+# Flash the FIRST time over USB (esp32-s3, USB-CDC). After that, OTA works.
+#
+# Edit the `inputs:` list to match YOUR installation:
+#   * channel 0 is the reference voltage transformer (VT) -- set `model` + `cal`.
+#   * every other channel is a CT clamp -- set the correct `model`, `channel`,
+#     `name`, and (for 240V/double-pole breakers) `double: true` / `vphase`.
+#   * `reverse: true` flips a CT reading if a clamp is installed backwards.
+#   See PHASE_TABLES in components/iotawatt/sensor.py for supported VT/CT models.
+#
+# See the README pin table for the ESP8266(NodeMCU)->ESP32-S3 rewiring.
+#
+# Status indicators (optional niceties shown here):
+#   * Onboard RGB LED (GPIO21): re-evaluated every 3s (state-based):
+#       red=no WiFi  amber=WiFi up/HA disconnected  magenta=connected but no valid
+#       AC reference (not sampling)  green=connected & sampling.
+#   * External panel LED (GPIO7): ESPHome status_led -- solid ON when healthy,
+#       slow blink on warning, fast blink on setup error.
+
+substitutions:
+  node_name: iotawatt
+  node_id: iotawatt
+  friendly_node_name: "IoTaWatt"
+  device_description: "IoTaWatt energy monitor (ESP32-S3 swap)"
+
 esphome:
-  name: iotawatt-monitor
+  name: ${node_name}
+  friendly_name: ${friendly_node_name}
+  comment: ${device_description}
+  # Deselect the SD card as EARLY as possible (before the ADC SPI transactions):
+  # the SD card shares the SPI bus, so its CS (GPIO4) must be held HIGH or it can
+  # corrupt ADC reads. This complements the gpio switch below.
+  on_boot:
+    - priority: 900
+      then:
+        - switch.turn_on: sd_card_cs_hold
+    # RGB LED: blue while booting until the first connectivity evaluation runs.
+    - priority: -100
+      then:
+        - light.turn_on:
+            id: onboard_led
+            brightness: 60%
+            red: 0%
+            green: 0%
+            blue: 100%
+    # Peripheral enumeration banner (logged once at boot).
+    - priority: -200
+      then:
+        - lambda: |-
+            const char* TAG = "peripherals";
+            ESP_LOGI(TAG, "==================================================");
+            ESP_LOGI(TAG, "IoTaWatt - connected peripheral enumeration");
+            ESP_LOGI(TAG, "--------------------------------------------------");
+            ESP_LOGI(TAG, "SPI ADCs (IoTaWatt MCP3208 x2):");
+            ESP_LOGI(TAG, "    CLK=GPIO12  MOSI=GPIO11  MISO=GPIO13");
+            ESP_LOGI(TAG, "    ADC0 CS=GPIO9   ADC1 CS=GPIO10");
+            ESP_LOGI(TAG, "SD Card (unused): CS=GPIO4 held HIGH (deselected)");
+            ESP_LOGI(TAG, "Onboard RGB LED (WS2812): DATA=GPIO21");
+            ESP_LOGI(TAG, "External status LED: GPIO7");
+            ESP_LOGI(TAG, "I2C RTC (STMicro M41T81):");
+            ESP_LOGI(TAG, "    SDA=GPIO5  SCL=GPIO6  expected 7-bit addr 0x68");
+            ESP_LOGI(TAG, "    (see 'Found i2c device' lines above for actual scan)");
+            ESP_LOGI(TAG, "System: free heap=%u bytes, min free=%u bytes",
+                     (unsigned) esp_get_free_heap_size(),
+                     (unsigned) esp_get_minimum_free_heap_size());
+            ESP_LOGI(TAG, "==================================================");
 
 esp32:
   board: esp32-s3-devkitc-1
-  cpu_frequency: 240MHz
   framework:
     type: esp-idf
+
+# The IoTaWatt component for the ESP32-S3 hardware swap.
+external_components:
+  - source:
+      type: git
+      url: https://github.com/juchong/esphome-iotawatt
+    refresh: 0s
+
+logger:
+  level: INFO
+
+globals:
+  - id: rgb_state
+    type: int
+    restore_value: no
+    initial_value: '-1'
+
+# I2C bus on the RTC pins. `scan: true` enumerates every I2C device on the bus at
+# boot (the M41T81 RTC appears at 0x68). ESPHome has no M41T81 time platform yet,
+# so this only detects the RTC.
+i2c:
+  id: bus_rtc
+  sda: 5
+  scl: 6
+  scan: true
+  frequency: 100kHz
+
+# LEDs.
+#  - onboard_led: WS2812 RGB on GPIO21. On this board it is wired RGB-order (not
+#    the usual GRB); with GRB the red/green channels came out swapped.
+#  - status_ext_led: external panel LED on GPIO7 (was NodeMCU D0). status_led light
+#    platform: solid ON when healthy, blinks on warning/error. Add `inverted: true`
+#    under the pin if it lights inverted.
+light:
+  - platform: esp32_rmt_led_strip
+    id: onboard_led
+    name: "Onboard LED"
+    pin: GPIO21
+    num_leds: 1
+    chipset: WS2812
+    rgb_order: RGB
+    entity_category: diagnostic
+  - platform: status_led
+    id: status_ext_led
+    name: "Status LED"
+    pin: GPIO7
+    restore_mode: ALWAYS_ON
+    entity_category: diagnostic
+
+# Connectivity/health indicator for the RGB LED. State-based (not edge-based) so a
+# transient drop can never leave a stale color.
+interval:
+  - interval: 3s
+    then:
+      - lambda: |-
+          bool wifi_ok = wifi::global_wifi_component->is_connected();
+          bool api_ok = api::global_api_server->is_connected();
+          float ref_v = id(ref_voltage).state;
+          bool sampling = !isnan(ref_v) && ref_v > 1.0f;
+          int s;
+          if (!wifi_ok) s = 0;            // red
+          else if (!api_ok) s = 1;        // amber
+          else if (!sampling) s = 2;      // magenta
+          else s = 3;                     // green
+          if (s == id(rgb_state)) return;
+          id(rgb_state) = s;
+          auto call = id(onboard_led).turn_on();
+          call.set_brightness(0.6f);
+          if (s == 0) call.set_rgb(1.0f, 0.0f, 0.0f);        // red     FF0000
+          else if (s == 1) call.set_rgb(1.0f, 0.50f, 0.0f);  // amber   FF8000
+          else if (s == 2) call.set_rgb(1.0f, 0.0f, 1.0f);   // magenta FF00FF
+          else call.set_rgb(0.0f, 1.0f, 0.0f);               // green   00FF00
+          call.perform();
+
+# Hold the SD card's chip-select HIGH so it stays off the shared SPI bus.
+switch:
+  - platform: gpio
+    id: sd_card_cs_hold
+    name: "SD Card CS Hold"
+    pin: 4
+    restore_mode: ALWAYS_ON
+    entity_category: diagnostic
+
+# Device health diagnostics (heap, loop time, reset reason).
+debug:
+  update_interval: 30s
+
+api:
+  encryption:
+    # Generate your own: `openssl rand -base64 32`
+    key: "REPLACE_WITH_YOUR_BASE64_API_ENCRYPTION_KEY"
+
+ota:
+  - platform: esphome
+    password: "REPLACE_WITH_YOUR_OTA_PASSWORD"
 
 wifi:
   ssid: !secret wifi_ssid
   password: !secret wifi_password
+  min_auth_mode: WPA2
+  fast_connect: true
 
-mqtt:
-  broker: !secret mqtt_broker
+  # Fallback hotspot (captive portal) if wifi fails
+  ap:
+    ssid: "IoTaWatt-Setup"
+    password: "REPLACE_WITH_YOUR_AP_PASSWORD"
+
+captive_portal:
 
 web_server:
   port: 80
-  version: 3
-  local: true
-  log: true
-  sorting_groups:
-    - id: sorting_group_reference
-      name: "Reference"
-      sorting_weight: 10
-    - id: sorting_group_power
-      name: "Power"
-      sorting_weight: 20
-    - id: sorting_group_power_factor
-      name: "Power Factor"
-      sorting_weight: 30
-    - id: sorting_group_current
-      name: "Current"
-      sorting_weight: 40
 
-logger:
-  level: INFO
-  baud_rate: 0
-
-ota:
-  password: !secret ota_password
-  platform: esphome
-
-external_components:
-  - source:
-      type: git
-      url: https://github.com/pawel-sw/esphome-iotawatt
+text_sensor:
+  - platform: debug
+    device:
+      name: "Device Info"
+    reset_reason:
+      name: "Reset Reason"
 
 sensor:
+  - platform: debug
+    free:
+      name: "Heap Free"
+    block:
+      name: "Heap Max Block"
+    loop_time:
+      name: "Loop Time"
+
+  # IoTaWatt energy monitoring.
+  # SPI pin defaults match the Waveshare ESP32-S3-Tiny wiring. Adjust if your
+  # ESP32-S3 board is wired differently.
   - platform: iotawatt
-    id: my_iotawatt
-    update_interval: 5s
+    id: ${node_id}
+    update_interval: 30s
     clk_pin: 12
     mosi_pin: 11
     miso_pin: 13
     cs_pin_0: 9
     cs_pin_1: 10
     inputs:
+      # --- Reference voltage transformer (channel 0) --------------------------
+      # Set `model` + `cal` to match your actual VT.
       - channel: 0
         name: "Reference"
         type: "VT"
@@ -63,300 +225,56 @@ sensor:
         cal: 11.12
         voltage:
           name: "Reference Voltage"
-          web_server:
-            sorting_group_id: sorting_group_reference
-            sorting_weight: 1
+          id: ref_voltage
         frequency:
           name: "Reference Frequency"
-          web_server:
-            sorting_group_id: sorting_group_reference
-            sorting_weight: 2
+
+      # --- Mains (240V split-phase example) -----------------------------------
+      # Set the correct CT `model` and `channel` for your feeds.
       - channel: 1
-        name: "L1"
+        name: "Main L1"
         type: "CT"
         model: "AcuCT-H100-200"
         reverse: true
         power:
           name: "L1 Power"
-          id: l1_power
-          web_server:
-            sorting_group_id: sorting_group_power
-            sorting_weight: 0
+          id: ${node_id}_l1_power
         current:
           name: "L1 Current"
-          web_server:
-            sorting_group_id: sorting_group_current
-            sorting_weight: 0
         power_factor:
           name: "L1 PF"
-          web_server:
-            sorting_group_id: sorting_group_power_factor
-            sorting_weight: 0
       - channel: 2
-        name: "L2"
+        name: "Main L2"
         type: "CT"
         model: "AcuCT-H100-200"
         reverse: true
         power:
           name: "L2 Power"
-          id: l2_power
-          web_server:
-            sorting_group_id: sorting_group_power
-            sorting_weight: 1
+          id: ${node_id}_l2_power
         current:
           name: "L2 Current"
-          web_server:
-            sorting_group_id: sorting_group_current
-            sorting_weight: 1
         power_factor:
           name: "L2 PF"
-          web_server:
-            sorting_group_id: sorting_group_power_factor
-            sorting_weight: 1
-      - channel: 3
-        name: "Kitchen Receptacles"
-        type: "CT"
-        model: "AcuCT-H040-50"
-        reverse: true
-        power:
-          name: "Kitchen Receptacles Power"
-          web_server:
-            sorting_group_id: sorting_group_power
-            sorting_weight: 2
-        current:
-          name: "Kitchen Receptacles Current"
-          web_server:
-            sorting_group_id: sorting_group_current
-            sorting_weight: 2
-        power_factor:
-          name: "Kitchen Receptacles PF"
-          web_server:
-            sorting_group_id: sorting_group_power_factor
-            sorting_weight: 2
-      - channel: 4
-        name: "Kitchen Receptacles 2"
-        type: "CT"
-        model: "AcuCT-H040-50"
-        reverse: true
-        power:
-          name: "Kitchen Receptacles 2 Power"
-          web_server:
-            sorting_group_id: sorting_group_power
-            sorting_weight: 3
-        current:
-          name: "Kitchen Receptacles 2 Current"
-          web_server:
-            sorting_group_id: sorting_group_current
-            sorting_weight: 3
-        power_factor:
-          name: "Kitchen Receptacles 2 PF"
-          web_server:
-            sorting_group_id: sorting_group_power_factor
-            sorting_weight: 3
-      - channel: 5
-        name: "Utility/Storage"
-        type: "CT"
-        model: "AcuCT-H040-50"
-        reverse: true
-        power:
-          name: "Utility/Storage Power"
-          web_server:
-            sorting_group_id: sorting_group_power
-            sorting_weight: 4
-        current:
-          name: "Utility/Storage Current"
-          web_server:
-            sorting_group_id: sorting_group_current
-            sorting_weight: 4
-        power_factor:
-          name: "Utility/Storage PF"
-          web_server:
-            sorting_group_id: sorting_group_power_factor
-            sorting_weight: 4
-      - channel: 6
-        name: "Bathroom Receptacles"
-        type: "CT"
-        model: "AcuCT-H040-50"
-        power:
-          name: "Bathroom Receptacles Power"
-          web_server:
-            sorting_group_id: sorting_group_power
-            sorting_weight: 5
-        current:
-          name: "Bathroom Receptacles Current"
-          web_server:
-            sorting_group_id: sorting_group_current
-            sorting_weight: 5
-        power_factor:
-          name: "Bathroom Receptacles PF"
-          web_server:
-            sorting_group_id: sorting_group_power_factor
-            sorting_weight: 5
-      - channel: 7
-        name: "Refrigerator"
-        type: "CT"
-        model: "AcuCT-H040-50"
-        reverse: true
-        power:
-          name: "Refrigerator Power"
-          web_server:
-            sorting_group_id: sorting_group_power
-            sorting_weight: 6
-        current:
-          name: "Refrigerator Current"
-          web_server:
-            sorting_group_id: sorting_group_current
-            sorting_weight: 6
-        power_factor:
-          name: "Refrigerator PF"
-          web_server:
-            sorting_group_id: sorting_group_power_factor
-            sorting_weight: 6
-      - channel: 8
-        name: "AC"
-        type: "CT"
-        model: "AcuCT-H040-50"
-        double: true
-        power:
-          name: "AC Power"
-          web_server:
-            sorting_group_id: sorting_group_power
-            sorting_weight: 7
-        current:
-          name: "AC Current"
-          web_server:
-            sorting_group_id: sorting_group_current
-            sorting_weight: 7
-        power_factor:
-          name: "AC PF"
-          web_server:
-            sorting_group_id: sorting_group_power_factor
-            sorting_weight: 7
-      - channel: 9
-        name: "Garage"
-        type: "CT"
-        model: "AcuCT-H040-50"
-        power:
-          name: "Garage Power"
-          web_server:
-            sorting_group_id: sorting_group_power
-            sorting_weight: 8
-        current:
-          name: "Garage Current"
-          web_server:
-            sorting_group_id: sorting_group_current
-            sorting_weight: 8
-        power_factor:
-          name: "Garage PF"
-          web_server:
-            sorting_group_id: sorting_group_power_factor
-            sorting_weight: 8
-      - channel: 10
-        name: "Dishwasher"
-        type: "CT"
-        model: "AcuCT-H040-50"
-        reverse: true
-        power:
-          name: "Dishwasher Power"
-          web_server:
-            sorting_group_id: sorting_group_power
-            sorting_weight: 9
-        current:
-          name: "Dishwasher Current"
-          web_server:
-            sorting_group_id: sorting_group_current
-            sorting_weight: 9
-        power_factor:
-          name: "Dishwasher PF"
-          web_server:
-            sorting_group_id: sorting_group_power_factor
-            sorting_weight: 9
-      - channel: 11
-        name: "Downstairs"
-        type: "CT"
-        model: "AcuCT-H040-50"
-        reverse: false
-        power:
-          name: "Downstairs Power"
-          web_server:
-            sorting_group_id: sorting_group_power
-            sorting_weight: 10
-        current:
-          name: "Downstairs Current"
-          web_server:
-            sorting_group_id: sorting_group_current
-            sorting_weight: 10
-        power_factor:
-          name: "Downstairs PF"
-          web_server:
-            sorting_group_id: sorting_group_power_factor
-            sorting_weight: 10
-      - channel: 12
-        name: "Outdoor Receptacles"
-        type: "CT"
-        model: "AcuCT-H040-50"
-        power:
-          name: "Outdoor Receptacles Power"
-          web_server:
-            sorting_group_id: sorting_group_power
-            sorting_weight: 11
-        current:
-          name: "Outdoor Receptacles Current"
-          web_server:
-            sorting_group_id: sorting_group_current
-            sorting_weight: 11
-        power_factor:
-          name: "Outdoor Receptacles PF"
-          web_server:
-            sorting_group_id: sorting_group_power_factor
-            sorting_weight: 11
-      - channel: 13
-        name: "Dryer"
-        type: "CT"
-        model: "AcuCT-H063-100"
-        reverse: false
-        power:
-          name: "Dryer Power"
-          web_server:
-            sorting_group_id: sorting_group_power
-            sorting_weight: 12
-        current:
-          name: "Dryer Current"
-          web_server:
-            sorting_group_id: sorting_group_current
-            sorting_weight: 12
-        power_factor:
-          name: "Dryer PF"
-          web_server:
-            sorting_group_id: sorting_group_power_factor
-            sorting_weight: 12
-      - channel: 14
-        name: "Range"
-        type: "CT"
-        model: "AcuCT-H063-100"
-        reverse: false
-        power:
-          name: "Range Power"
-          web_server:
-            sorting_group_id: sorting_group_power
-            sorting_weight: 13
-        current:
-          name: "Range Current"
-          web_server:
-            sorting_group_id: sorting_group_current
-            sorting_weight: 13
-        power_factor:
-          name: "Range PF"
-          web_server:
-            sorting_group_id: sorting_group_power_factor
-            sorting_weight: 13
+
+      # --- Branch circuits ----------------------------------------------------
+      # Add your remaining CTs here, e.g.:
+      # - channel: 3
+      #   name: "Dryer"
+      #   type: "CT"
+      #   model: "AcuCT-H063-100"
+      #   double: true      # 240V double-pole breaker
+      #   vphase: 120.0
+      #   power:
+      #     name: "Dryer Power"
+      #   current:
+      #     name: "Dryer Current"
+
+  # Total of both mains legs.
   - platform: template
     name: "Total Power"
-    id: total_power
+    id: ${node_id}_total_power
     unit_of_measurement: "W"
+    device_class: power
+    state_class: measurement
     lambda: |-
-      return id(l1_power).state + id(l2_power).state;
-    update_interval: 5s
-    web_server:
-      sorting_group_id: sorting_group_power
-      sorting_weight: -1
+      return id(${node_id}_l1_power).state + id(${node_id}_l2_power).state;

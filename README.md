@@ -24,9 +24,9 @@ NodeMCU pin to the corresponding ESP32-S3 GPIO:
 | D8                    | GPIO4        | SD card CS (hold HIGH / deselected) |
 | D3                    | GPIO9        | ADC 0 chip select |
 | D4                    | GPIO10       | ADC 1 chip select |
-| SD1                   | GPIO11       | SPI MOSI |
-| CLK                   | GPIO12       | SPI CLK |
-| SDO                   | GPIO13       | SPI MISO |
+| D7                    | GPIO11       | SPI MOSI |
+| D5                    | GPIO12       | SPI CLK |
+| D6                    | GPIO13       | SPI MISO |
 | TX                    | TX           | UART console TX |
 | RX                    | RX           | UART console RX |
 

@@ -296,6 +296,17 @@ static SampleCycleResult sample_cycle(const InputConfig &vt_config,
   bool has_signal = (max_val - min_val) > 100; // ~80mV threshold
   vt_offset = (min_val + max_val) / 2;
   result.vt_offset = vt_offset;
+  // DEBUG: report the raw VT scan so we can tell whether the ADC is reading a
+  // real waveform. range~0 => SPI/ADC not returning data (wiring); small range
+  // => VT not on live AC; large range => ADC OK, look downstream.
+  static int64_t last_vt_scan_log_us = 0;
+  int64_t now_us = esp_timer_get_time();
+  if (now_us - last_vt_scan_log_us > 2000000) {
+    last_vt_scan_log_us = now_us;
+    ESP_LOGD(TAG, "VT scan ch=%u min=%u max=%u range=%u signal=%d",
+             vt_config.channel, min_val, max_val,
+             (unsigned) (max_val - min_val), has_signal);
+  }
   if (!has_signal) {
     return result;
   }
