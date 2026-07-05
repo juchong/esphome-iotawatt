@@ -1,6 +1,6 @@
 # Sample ESPHome configuration for an IoTaWatt with the stock ESP8266 swapped
 # for an ESP32-S3, driven by this component. This mirrors a real working build
-# (a subpanel monitor) and documents the full peripheral wiring.
+# and documents the full peripheral wiring.
 #
 # SECRETS: replace the api encryption key, OTA password, and AP password below,
 # and define wifi_ssid / wifi_password in your secrets.yaml. Never commit real
@@ -17,12 +17,18 @@
 #
 # See the README pin table for the ESP8266(NodeMCU)->ESP32-S3 rewiring.
 #
-# Status indicators (optional niceties shown here):
-#   * Onboard RGB LED (GPIO21): re-evaluated every 3s (state-based):
-#       red=no WiFi  amber=WiFi up/HA disconnected  magenta=connected but no valid
-#       AC reference (not sampling)  green=connected & sampling.
-#   * External panel LED (GPIO7): ESPHome status_led -- solid ON when healthy,
-#       slow blink on warning, fast blink on setup error.
+# Pin map (ESP32-S3) used below:
+#   GPIO11 MOSI  GPIO12 CLK  GPIO13 MISO   (SPI to both MCP3208 ADCs)
+#   GPIO7  ADC0 CS   GPIO10 ADC1 CS
+#   GPIO4  SD card CS (held HIGH, unused)
+#   GPIO14 I2C SDA   GPIO15 I2C SCL        (M41T81 RTC @ 0x68)
+#   GPIO21 onboard WS2812 RGB
+#   GPIO6 / GPIO5    external bi-color status LED legs
+#
+# Status indicators (optional niceties shown here, driven by the health interval):
+#   * Onboard RGB LED (GPIO21): red=no WiFi  amber=WiFi up/HA disconnected
+#       magenta=connected but no valid AC reference (not sampling)  green=healthy.
+#   * External bi-color panel LED (GPIO6/GPIO5): green=healthy, red=any problem.
 
 substitutions:
   node_name: iotawatt
@@ -60,13 +66,12 @@ esphome:
             ESP_LOGI(TAG, "--------------------------------------------------");
             ESP_LOGI(TAG, "SPI ADCs (IoTaWatt MCP3208 x2):");
             ESP_LOGI(TAG, "    CLK=GPIO12  MOSI=GPIO11  MISO=GPIO13");
-            ESP_LOGI(TAG, "    ADC0 CS=GPIO9   ADC1 CS=GPIO10");
+            ESP_LOGI(TAG, "    ADC0 CS=GPIO7   ADC1 CS=GPIO10");
             ESP_LOGI(TAG, "SD Card (unused): CS=GPIO4 held HIGH (deselected)");
             ESP_LOGI(TAG, "Onboard RGB LED (WS2812): DATA=GPIO21");
-            ESP_LOGI(TAG, "External status LED: GPIO7");
+            ESP_LOGI(TAG, "External bi-color LED: GPIO6 + GPIO5");
             ESP_LOGI(TAG, "I2C RTC (STMicro M41T81):");
-            ESP_LOGI(TAG, "    SDA=GPIO5  SCL=GPIO6  expected 7-bit addr 0x68");
-            ESP_LOGI(TAG, "    (see 'Found i2c device' lines above for actual scan)");
+            ESP_LOGI(TAG, "    SDA=GPIO14  SCL=GPIO15  expected 7-bit addr 0x68");
             ESP_LOGI(TAG, "System: free heap=%u bytes, min free=%u bytes",
                      (unsigned) esp_get_free_heap_size(),
                      (unsigned) esp_get_minimum_free_heap_size());
@@ -93,22 +98,28 @@ globals:
     restore_value: no
     initial_value: '-1'
 
-# I2C bus on the RTC pins. `scan: true` enumerates every I2C device on the bus at
-# boot (the M41T81 RTC appears at 0x68). ESPHome has no M41T81 time platform yet,
-# so this only detects the RTC.
+# I2C bus for the M41T81 RTC (GPIO14/15). `scan: true` logs devices at boot (0x68).
+# ESPHome has no stock M41T81 time platform, so this only detects the RTC.
 i2c:
   id: bus_rtc
-  sda: 5
-  scl: 6
+  sda: 14
+  scl: 15
   scan: true
   frequency: 100kHz
 
-# LEDs.
-#  - onboard_led: WS2812 RGB on GPIO21. On this board it is wired RGB-order (not
-#    the usual GRB); with GRB the red/green channels came out swapped.
-#  - status_ext_led: external panel LED on GPIO7 (was NodeMCU D0). status_led light
-#    platform: solid ON when healthy, blinks on warning/error. Add `inverted: true`
-#    under the pin if it lights inverted.
+# External bi-color panel LED legs, driven as plain GPIO outputs.
+# On this build green = GPIO6 LOW + GPIO5 HIGH; red is the reverse (determined
+# empirically -- swap the turn_on/turn_off below if your colors are reversed, or
+# add `inverted: true` if the LED is common-anode).
+output:
+  - platform: gpio
+    id: led_d0   # bi-color leg A (was NodeMCU D0)
+    pin: GPIO6
+  - platform: gpio
+    id: led_d3   # bi-color leg B (was NodeMCU D3)
+    pin: GPIO5
+
+# Onboard WS2812 RGB on GPIO21 (wired RGB-order on this board, not the usual GRB).
 light:
   - platform: esp32_rmt_led_strip
     id: onboard_led
@@ -118,15 +129,10 @@ light:
     chipset: WS2812
     rgb_order: RGB
     entity_category: diagnostic
-  - platform: status_led
-    id: status_ext_led
-    name: "Status LED"
-    pin: GPIO7
-    restore_mode: ALWAYS_ON
-    entity_category: diagnostic
 
-# Connectivity/health indicator for the RGB LED. State-based (not edge-based) so a
-# transient drop can never leave a stale color.
+# Connectivity/health indicator: evaluate current state every few seconds and set
+# BOTH LEDs. State-based (not edge-based) so a transient drop can never leave a
+# stale indication.
 interval:
   - interval: 3s
     then:
@@ -139,9 +145,10 @@ interval:
           if (!wifi_ok) s = 0;            // red
           else if (!api_ok) s = 1;        // amber
           else if (!sampling) s = 2;      // magenta
-          else s = 3;                     // green
+          else s = 3;                     // green (healthy)
           if (s == id(rgb_state)) return;
           id(rgb_state) = s;
+          // Onboard RGB: detailed state color
           auto call = id(onboard_led).turn_on();
           call.set_brightness(0.6f);
           if (s == 0) call.set_rgb(1.0f, 0.0f, 0.0f);        // red     FF0000
@@ -149,6 +156,14 @@ interval:
           else if (s == 2) call.set_rgb(1.0f, 0.0f, 1.0f);   // magenta FF00FF
           else call.set_rgb(0.0f, 1.0f, 0.0f);               // green   00FF00
           call.perform();
+          // External bi-color LED: green when healthy, red on any problem.
+          if (s == 3) {
+            id(led_d0).turn_off();   // GPIO6 LOW
+            id(led_d3).turn_on();    // GPIO5 HIGH -> green
+          } else {
+            id(led_d0).turn_on();    // GPIO6 HIGH
+            id(led_d3).turn_off();   // GPIO5 LOW  -> red
+          }
 
 # Hold the SD card's chip-select HIGH so it stays off the shared SPI bus.
 switch:
@@ -213,7 +228,7 @@ sensor:
     clk_pin: 12
     mosi_pin: 11
     miso_pin: 13
-    cs_pin_0: 9
+    cs_pin_0: 7
     cs_pin_1: 10
     inputs:
       # --- Reference voltage transformer (channel 0) --------------------------
