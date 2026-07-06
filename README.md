@@ -14,23 +14,33 @@ When using an ESP32-S3 module with its own LDO, it is recommended to use USB 5V 
 
 ### Pin Wiring (ESP8266 → ESP32-S3)
 
-Once the original ESP8266 is removed, rewire the following signals from the old
-NodeMCU pin to the corresponding ESP32-S3 GPIO:
+Once the original ESP8266 is removed, rewire the following signals to the
+ESP32-S3. The NodeMCU column is the original ESP8266 pin each signal was on
+(where applicable); the ESP32-S3 column is the GPIO used in
+[`sample.yaml`](sample.yaml).
 
-| ESP8266 (NodeMCU) Pin | ESP32-S3 Pin | Function |
-| --------------------- | ------------ | -------- |
-| D1                    | GPIO6        | I²C SCL (M41T81 RTC) |
-| D2                    | GPIO5        | I²C SDA (M41T81 RTC) |
-| D8                    | GPIO4        | SD card CS (hold HIGH / deselected) |
-| D3                    | GPIO9        | ADC 0 chip select |
-| D4                    | GPIO10       | ADC 1 chip select |
-| D7                    | GPIO11       | SPI MOSI |
-| D5                    | GPIO12       | SPI CLK |
-| D6                    | GPIO13       | SPI MISO |
-| TX                    | TX           | UART console TX |
-| RX                    | RX           | UART console RX |
+| Signal / Function               | NodeMCU Pin | ESP32-S3 GPIO |
+| ------------------------------- | ----------- | ------------- |
+| SPI MOSI                        | D7          | GPIO11        |
+| SPI CLK                         | D5          | GPIO12        |
+| SPI MISO                        | D6          | GPIO13        |
+| ADC 0 chip select               | —           | GPIO7         |
+| ADC 1 chip select               | D4          | GPIO10        |
+| SD card CS (held HIGH / unused) | D8          | GPIO4         |
+| I²C SDA (M41T81 RTC)            | D2          | GPIO14        |
+| I²C SCL (M41T81 RTC)            | D1          | GPIO15        |
+| Bi-color status LED, leg A      | D0          | GPIO6         |
+| Bi-color status LED, leg B      | D3          | GPIO5         |
+| UART TX (console)               | TX          | TX            |
+| UART RX (console)               | RX          | RX            |
 
-Hand-wired ESP32-S3 swap following the mapping above:
+> **Front-panel LED:** it's a **bi-color** LED on the original **D0/D3** net,
+> which on the stock board also carried an ADC chip-select — that's why it
+> flickered with sampling. Give ADC0 CS its own GPIO (GPIO7 here) so the two LED
+> legs (GPIO6/GPIO5) can be driven independently as a green/red status indicator.
+> There is also an onboard WS2812 RGB LED on **GPIO21**.
+
+Hand-wired ESP32-S3 swap:
 ![IoTaWatt hand-wired to an ESP32-S3](images/iotawatt-hand-wired.webp)
 
 ## Overview
