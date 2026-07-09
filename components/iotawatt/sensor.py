@@ -242,7 +242,7 @@ async def to_code(config):
         reverse = input_conf[CONF_REVERSE]
         vphase = input_conf[CONF_VPHASE]
         double_input = input_conf[CONF_DOUBLE]
-        frequency_s = None
+        frequency_s = cg.nullptr
         if CONF_FREQUENCY_SENSOR in input_conf:
             frequency_s = await sensor.new_sensor(input_conf[CONF_FREQUENCY_SENSOR])
 
@@ -285,7 +285,7 @@ async def to_code(config):
         power_s = await sensor.new_sensor(input_conf[CONF_POWER_SENSOR])
         current_s = await sensor.new_sensor(input_conf[CONF_CURRENT_SENSOR])
 
-        pf_s = None
+        pf_s = cg.nullptr
         if CONF_POWER_FACTOR in input_conf:
             pf_s = await sensor.new_sensor(input_conf[CONF_POWER_FACTOR])
 
