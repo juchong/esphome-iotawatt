@@ -98,6 +98,12 @@ globals:
     restore_value: no
     initial_value: '-1'
 
+# Time source required by the total_daily_energy sensors (local-midnight reset).
+# Synced from Home Assistant over the API; swap for `sntp` if you prefer.
+time:
+  - platform: homeassistant
+    id: ha_time
+
 # I2C bus for the M41T81 RTC (GPIO14/15). `scan: true` logs devices at boot (0x68).
 # ESPHome has no stock M41T81 time platform, so this only detects the RTC.
 i2c:
@@ -293,3 +299,39 @@ sensor:
     state_class: measurement
     lambda: |-
       return id(${node_id}_l1_power).state + id(${node_id}_l2_power).state;
+
+  # --------------------------------------------------------------------------
+  # Energy (kWh) totals for the Home Assistant Energy dashboard.
+  # total_daily_energy integrates a power sensor and resets at local midnight,
+  # reporting device_class: energy / state_class: total_increasing -- exactly
+  # what the Energy dashboard expects. The 0.001 multiply converts Wh -> kWh.
+  # Give every CT `power:` block an `id:` (as with the mains below) and add one
+  # total_daily_energy sensor per channel you want to track. Use the mains
+  # (grid consumption) as the Energy dashboard's grid source, and add branch
+  # circuits as "individual devices".
+  # --------------------------------------------------------------------------
+  - platform: total_daily_energy
+    name: "L1 Energy"
+    power_id: ${node_id}_l1_power
+    accuracy_decimals: 3
+    filters: [{ multiply: 0.001 }]
+    unit_of_measurement: kWh
+  - platform: total_daily_energy
+    name: "L2 Energy"
+    power_id: ${node_id}_l2_power
+    accuracy_decimals: 3
+    filters: [{ multiply: 0.001 }]
+    unit_of_measurement: kWh
+  - platform: total_daily_energy
+    name: "Total Energy"
+    power_id: ${node_id}_total_power
+    accuracy_decimals: 3
+    filters: [{ multiply: 0.001 }]
+    unit_of_measurement: kWh
+  # Example branch-circuit energy sensor (add one per CT `power:` id):
+  # - platform: total_daily_energy
+  #   name: "Dryer Energy"
+  #   power_id: ${node_id}_dryer_power
+  #   accuracy_decimals: 3
+  #   filters: [{ multiply: 0.001 }]
+  #   unit_of_measurement: kWh
